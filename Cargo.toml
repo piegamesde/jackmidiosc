@@ -1,0 +1,11 @@
+[package]
+name = "jackmidiosc"
+version = "0.1.0"
+description = "Send MIDI data over the internet using OSC"
+authors = ["piegames <14054505+piegamesde@users.noreply.github.com>"]
+edition = "2018"
+
+[dependencies]
+jack = "0.6.0"
+clap = "2.33.0"
+rosc = "0.1.6"

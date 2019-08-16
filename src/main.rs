@@ -1,3 +1,6 @@
+#![feature(try_trait, result_map_or_else)]
+use std::ops::Try;
+
 use std::net::UdpSocket;
 use std::sync::mpsc;
 
@@ -67,22 +70,33 @@ fn main() {
 		move || {
 			let mut buffer = vec![0;decoder::MTU];
 			loop {
-				match receive_socket.recv_from(&mut buffer) {
-					Ok((read, _sender)) => match decoder::decode(&mut buffer[..read]) {
-						Ok(OscPacket::Message(OscMessage{addr, args})) => if addr == "/midi" {
+				receive_socket.recv_from(&mut buffer)
+					.map_or_else(|e| {error!("Could not receive UDP packet: {}", e); None}, |v| Some(v))
+					.map(|(read, _sender)| decoder::decode(&mut buffer[..read]))
+					.transpose()
+					.unwrap_or_else(|e| {error!("Could not decode OSC packet: {:?}", e); None})
+					.map_or(Vec::new().into_iter(), |message| match message {
+						OscPacket::Message(OscMessage{addr, args}) => if addr == "/midi" {
 							if let Some(data) = args {
-								for osc_type in data.iter() {
-									if let OscType::Midi(midi_message) = osc_type {
-										tx_output.send(midi_message.clone()).unwrap();
-									}
-								}
+								data.into_iter()
+							} else {
+								Vec::new().into_iter()
 							}
+						} else {
+							Vec::new().into_iter()
 						},
-						Ok(_) => (), // Simply ignore non-matching packets (Should we? Or should there be a warning?)
-						Err(e) => error!("Could not decode OSC packet: {:?}", e)
-					},
-					Err(e) => error!("Could not receive UDP packet: {}", e)
-				}
+						_ => Vec::new().into_iter() // Simply ignore non-matching packets (Should we? Or should there be a warning?)
+					})
+					.filter_map(|osc_type| {
+						if let OscType::Midi(midi_message) = osc_type {
+							Some(midi_message)
+						} else {
+							None
+						}
+					})
+					.try_for_each(|midi_message| tx_output.send(midi_message)).into_result()
+					.err()
+					.map(|e| {error!("Could not send message down the pipe: {}", e);});
 			}
 		}
 	});

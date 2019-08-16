@@ -2,7 +2,7 @@
 name = "jackmidiosc"
 version = "0.1.0"
 description = "Send MIDI data over the internet using OSC"
-authors = ["piegames <14054505+piegamesde@users.noreply.github.com>"]
+authors = ["piegames <piegames@darmstadt.ccc.de>"]
 edition = "2018"
 
 [dependencies]

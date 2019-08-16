@@ -20,7 +20,7 @@ const DEFAULT_RECEIVE_ADDRESS: &str = "localhost:8953";
 const DEFAULT_BIND_ADDRESS: &str = "localhost:0"; // "0.0.0.0:0" does not work
 
 fn main() {
-	simple_logger::init().unwrap();
+	simple_logger::init().expect("Could not start logger");
 	
 	jack::set_info_callback(|info| {debug!(target: "jack", "{}", info);});
 	jack::set_error_callback(|error| {warn!(target: "jack", "{}", error);});
@@ -90,7 +90,7 @@ fn main() {
 	// Network send handler
 	let send_handler = send_address.map(|address| {
 		let send_socket = UdpSocket::bind(DEFAULT_BIND_ADDRESS).expect("Can't create UDP socket");
-		send_socket.connect(address).unwrap();
+		send_socket.connect(address).expect("Can't connect to UDP socket");
 		info!("Send mode activated. Sending to {}.", address);
 
 		move || {
@@ -109,15 +109,13 @@ fn main() {
 	// JACK handler
 
 	let (client, _status) = Client::new(&value_t!(matches.value_of("name"), String).unwrap_or_else(|e| e.exit()), jack::ClientOptions::NO_START_SERVER).expect("Could not connect to JACK server");
-	let input_ports: Vec<Port<MidiIn>> = if send_address.is_some() {
-		(0..count).map(|i| client.register_port(&format!("input_{}", i), jack::MidiIn::default()).expect("Could not create MIDI input port")).collect()
-	} else {
-		Vec::new()
+	let input_ports: Vec<Port<MidiIn>> = match send_address {
+		Some(_) => (0..count).map(|i| client.register_port(&format!("input_{}", i), jack::MidiIn::default()).expect("Could not create MIDI input port")).collect(),
+		None => Vec::new()
 	};
-	let output_ports: Vec<Port<MidiOut>> = if receive_address.is_some() {
-		(0..count).map(|i| client.register_port(&format!("output_{}", i), jack::MidiOut::default()).expect("Could not create MIDI output port")).collect()
-	} else {
-		Vec::new()
+	let output_ports: Vec<Port<MidiOut>> = match receive_address {
+		Some(_) => (0..count).map(|i| client.register_port(&format!("output_{}", i), jack::MidiOut::default()).expect("Could not create MIDI output port")).collect(),
+		None => Vec::new()
 	};
 
 	let jack_handler = JackHandler {
@@ -138,9 +136,8 @@ fn main() {
 	
 	// Wait for them
 	for t in handler_threads {
-		t.join().unwrap();
+		t.join().expect("Failed waiting for remaining threads");
 	}
-	info!("Done.");
 }
 
 struct JackHandler {
@@ -152,27 +149,23 @@ struct JackHandler {
 
 impl ProcessHandler for JackHandler {
 	fn process(&mut self, _client: &Client, process_scope: &ProcessScope) -> jack::Control {
-		for port in 0..self.input_ports.len() {
-			for event in self.input_ports[port].iter(process_scope) {
+		for (p, port) in &mut self.input_ports.iter_mut().enumerate() {
+			for event in port.iter(process_scope) {
 				self.tx_input.send(OscMidiMessage{
-					port: port as u8,
+					port: p as u8,
 					status: event.bytes[0],
 					data1: event.bytes[1],
 					data2: event.bytes[2]
 				}).unwrap();
 			}
 		}
-		let mut data: Vec<Vec<u8>> = vec![Vec::with_capacity(3); self.output_ports.len()];
+		let mut writers: Vec<jack::MidiWriter> = self.output_ports.iter_mut()
+			.map(|port| port.writer(process_scope))
+			.collect();
 		for message in self.rx_output.try_iter() {
-			data[message.port as usize].push(message.status);
-			data[message.port as usize].push(message.data1);
-			data[message.port as usize].push(message.data2);
-		}
-		for port in 0..self.output_ports.len() {
-			let mut writer = self.output_ports[port].writer(process_scope);
-			writer.write(&RawMidi {
+			&mut writers[message.port as usize].write(&RawMidi {
 				time: 0,
-				bytes: &data[port]
+				bytes: &[message.status, message.data1, message.data2]
 			}).unwrap();
 		}
 		jack::Control::Continue

@@ -1,4 +1,4 @@
-#![feature(try_trait, result_map_or_else)]
+#![feature(try_trait, result_map_or_else, option_flattening)]
 use std::ops::Try;
 
 use std::net::UdpSocket;
@@ -70,23 +70,27 @@ fn main() {
 		move || {
 			let mut buffer = vec![0;decoder::MTU];
 			loop {
-				receive_socket.recv_from(&mut buffer)
+				/* Every loop:
+				 * - Receive a UDP packet
+				 * - Parse it as OSC packet
+				 * - Extract all events if they are sent to address `/midi`
+				 * - Only use the `OscType::Midi` events
+				 * - Send them down the pipe to the JACK handler
+				 * The whole thing is wrapped in `Option`, so anything unexpected (e.g. wrong address, bad packet)
+				 * will result in `None` and thus the remaining code not being executed. `Result`s are handled by
+				 * downgrading them to `Option`s after having logged the error message.
+				 * This way, the method should never panic and simply ignore any non-conforming input.
+				 */
+				receive_socket
+					.recv_from(&mut buffer)
 					.map_or_else(|e| {error!("Could not receive UDP packet: {}", e); None}, |v| Some(v))
-					.map(|(read, _sender)| decoder::decode(&mut buffer[..read]))
-					.transpose()
+					.map(|(read, _sender)| decoder::decode(&mut buffer[..read])).transpose()
 					.unwrap_or_else(|e| {error!("Could not decode OSC packet: {:?}", e); None})
-					.map_or(Vec::new().into_iter(), |message| match message {
-						OscPacket::Message(OscMessage{addr, args}) => if addr == "/midi" {
-							if let Some(data) = args {
-								data.into_iter()
-							} else {
-								Vec::new().into_iter()
-							}
-						} else {
-							Vec::new().into_iter()
-						},
-						_ => Vec::new().into_iter() // Simply ignore non-matching packets (Should we? Or should there be a warning?)
-					})
+					.map(|message| match message {
+						OscPacket::Message(OscMessage{addr, args}) => args.filter(|_| addr == "/midi"),
+						_ => None // Simply ignore non-matching packets (Should we? Or should there be a warning?)
+					}).flatten().unwrap_or_else(Vec::new)
+					.into_iter()
 					.filter_map(|osc_type| {
 						if let OscType::Midi(midi_message) = osc_type {
 							Some(midi_message)
